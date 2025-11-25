@@ -1,0 +1,26 @@
+{
+  "pairs": {
+    "USD_EUR": {
+      "rate": 0.93,
+      "updated_at": "2025-11-25T19:56:32.060047",
+      "source": "Manual"
+    },
+    "EUR_USD": {
+      "rate": 1.08,
+      "updated_at": "2025-11-25T19:56:32.060062",
+      "source": "Manual"
+    },
+    "BTC_USD": {
+      "rate": 50000.0,
+      "updated_at": "2025-11-25T19:56:32.060064",
+      "source": "Manual"
+    },
+    "USD_BTC": {
+      "rate": 2e-05,
+      "updated_at": "2025-11-25T19:56:32.060066",
+      "source": "Manual"
+    }
+  },
+  "last_refresh": "2025-11-25T19:56:32.060067",
+  "source": "Manual"
+}

@@ -1,22 +1,28 @@
-[project]
+[tool.poetry]
 name = "finalproject-barsukov-m25-555"
 version = "0.1.0"
-description = ""
-authors = [
-    {name = "Барсуков Михаил Алексеевич",email = "Mr.Brock63@yandex.ru"}
-]
+description = "Currency trading wallet simulation platform"
+authors = ["Барсуков Михаил Алексеевич <Mr.Brock63@yandex.ru>"]
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "prettytable (>=3.17.0,<4.0.0)"
-]
+packages = [{include = "valutatrade_hub", from = "."}]
 
+[tool.poetry.dependencies]
+python = "^3.8"
+prettytable = "^3.9.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.1.6"
+
+[tool.poetry.scripts]
+valutatrade = "main:main"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[dependency-groups]
-dev = [
-    "ruff (>=0.14.6,<0.15.0)"
-]
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.format]
+quote-style = "double"
