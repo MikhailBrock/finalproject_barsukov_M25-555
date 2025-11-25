@@ -1,0 +1,22 @@
+[project]
+name = "finalproject-barsukov-m25-555"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Барсуков Михаил Алексеевич",email = "Mr.Brock63@yandex.ru"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "prettytable (>=3.17.0,<4.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.14.6,<0.15.0)"
+]

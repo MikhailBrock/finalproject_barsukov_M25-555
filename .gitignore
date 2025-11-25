@@ -1,0 +1,11 @@
+dist/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+*.log
+logs/
+data/exchange_rates.json
