@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "finalproject-barsukov-m25-555"
-version = "0.1.0"
+version = "1.0.0"
 description = "Currency trading wallet simulation platform"
 authors = ["Барсуков Михаил Алексеевич <Mr.Brock63@yandex.ru>"]
 readme = "README.md"
@@ -9,9 +9,12 @@ packages = [{include = "valutatrade_hub", from = "."}]
 [tool.poetry.dependencies]
 python = "^3.8"
 prettytable = "^3.9.0"
+requests = "^2.31.0"
+schedule = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.1.6"
+pytest = "^7.4.0"
 
 [tool.poetry.scripts]
 valutatrade = "main:main"
@@ -26,3 +29,9 @@ target-version = "py38"
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

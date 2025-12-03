@@ -1,514 +1,734 @@
 import argparse
 import json
 import os
-import hashlib
+import sys
 from datetime import datetime
 import logging
-from valutatrade_hub.core.currencies import CurrencyRegistry
-from valutatrade_hub.core.exceptions import InsufficientFundsError, CurrencyNotFoundError, ApiRequestError
-from valutatrade_hub.infra.settings import SettingsLoader
-from valutatrade_hub.decorators import log_action
-from valutatrade_hub.logging_config import setup_logging
+from typing import Optional
 
-# Инициализируем логирование
+from prettytable import PrettyTable
+
+from valutatrade_hub.core.currencies import CurrencyRegistry
+from valutatrade_hub.core.exceptions import (
+    AuthenticationError
+)
+from valutatrade_hub.core.usecases import (
+    UserUseCases, PortfolioUseCases, RatesUseCases
+)
+from valutatrade_hub.infra.settings import SettingsLoader
+from valutatrade_hub.infra.database import DatabaseManager
+from valutatrade_hub.parser_service.config import ParserConfig
+from valutatrade_hub.parser_service.updater import RatesUpdater
+from valutatrade_hub.parser_service.storage import RatesStorage
+from valutatrade_hub.parser_service.api_clients import ApiClientFactory
+from valutatrade_hub.logging_config import setup_logging, LoggingMixin
+
+
+# Настройка логирования
 setup_logging()
 logger = logging.getLogger('valutatrade.cli')
 
-class CLIInterface:
+
+class CLIInterface(LoggingMixin):
+    """Основной класс CLI интерфейса"""
+    
     def __init__(self):
+        super().__init__()
         self.current_user = None
-        self.settings = SettingsLoader()  # Singleton настроек
+        self.settings = SettingsLoader()
+        self.db = DatabaseManager()
         self.data_dir = self.settings.get('data_dir', 'data')
         self.session_file = os.path.join(self.data_dir, "session.json")
+        
+        # Инициализация парсера
+        self.parser_config = ParserConfig()
+        self.rates_storage = RatesStorage(self.parser_config)
+        self.rates_updater = RatesUpdater(self.parser_config, self.rates_storage)
+        
         self._ensure_data_files()
         self._load_session()
-        logger.info("CLIInterface initialized")
+        
+        self.log_info("CLIInterface initialized")
     
     def _ensure_data_files(self):
-        """Создает необходимые JSON файлы если их нет"""
+        """Создает необходимые файлы данных если их нет"""
         os.makedirs(self.data_dir, exist_ok=True)
-    
-        # Получаем список известных валют из реестра
-        known_currencies = CurrencyRegistry.list_currencies()
-    
-        # Создаем базовые курсы для всех известных валют
-        pairs = {}
-        for currency in known_currencies:
-            if currency != 'USD':
-                pairs[f"{currency}_USD"] = {
-                    "rate": 1.0 if currency == 'USD' else 
-                            0.93 if currency == 'EUR' else
-                            0.011 if currency == 'RUB' else
-                            50000.0 if currency == 'BTC' else
-                            3000.0 if currency == 'ETH' else 1.0,
-                    "updated_at": datetime.now().isoformat(), 
-                    "source": "Manual"
-                }
-    
+        
         files = {
             'users.json': [],
             'portfolios.json': [],
             'rates.json': {
-                "pairs": pairs,
+                "pairs": {},
                 "last_refresh": datetime.now().isoformat(),
                 "source": "Manual"
             },
-            'session.json': {}
+            'session.json': {},
+            'transactions.json': [],
+            'exchange_rates.json': []
         }
-    
+        
         for filename, default_content in files.items():
             filepath = os.path.join(self.data_dir, filename)
             if not os.path.exists(filepath):
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(default_content, f, indent=2, ensure_ascii=False)
-                logger.debug(f"Created {filepath}")
-            else:
-                # Обновляем существующий rates.json если нужно
-                if filename == 'rates.json':
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                    # Добавляем недостающие пары валют
-                    if 'USD_EUR' not in existing_data.get('pairs', {}):
-                        existing_data['pairs']['USD_EUR'] = {"rate": 0.93, "updated_at": datetime.now().isoformat(), "source": "Manual"}
-                    if 'USD_BTC' not in existing_data.get('pairs', {}):
-                        existing_data['pairs']['USD_BTC'] = {"rate": 0.00002, "updated_at": datetime.now().isoformat(), "source": "Manual"}
-                    self._save_json('rates.json', existing_data)
+                self.log_debug(f"Created {filepath}")
     
     def _load_session(self):
-        """Загружает сессию из файла"""
+        """Загружает сессию пользователя из файла"""
         try:
             with open(self.session_file, 'r', encoding='utf-8') as f:
                 session_data = json.load(f)
-                if session_data and 'user_id' in session_data:
-                    # Загружаем данные пользователя из users.json
-                    users = self._load_json('users.json')
-                    self.current_user = next(
-                        (user for user in users if user['user_id'] == session_data['user_id']), 
-                        None
-                    )
+            
+            if session_data and 'user_id' in session_data:
+                user_id = session_data['user_id']
+                self.current_user = self.db.get_user_by_id(user_id)
+                if self.current_user:
+                    self.log_info(f"Session loaded for user: {self.current_user.username}")
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             self.current_user = None
     
-    def _save_session(self, user_data=None):
-        """Сохраняет сессию в файл"""
+    def _save_session(self, user_id: Optional[int] = None):
+        """Сохраняет сессию пользователя в файл"""
         session_data = {}
-        if user_data:
-            session_data = {'user_id': user_data['user_id']}
+        if user_id:
+            session_data = {'user_id': user_id}
         
         with open(self.session_file, 'w', encoding='utf-8') as f:
             json.dump(session_data, f, indent=2, ensure_ascii=False)
     
     def _clear_session(self):
-        """Очищает сессию"""
+        """Очищает сессию пользователя"""
         self.current_user = None
         self._save_session()
-    
-    def _load_json(self, filename):
-        """Загружает данные из JSON файла"""
-        filepath = os.path.join(self.data_dir, filename)
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return [] if filename in ['users.json', 'portfolios.json'] else {}
-    
-    def _save_json(self, filename, data):
-        """Сохраняет данные в JSON файл"""
-        filepath = os.path.join(self.data_dir, filename)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    
-    def _hash_password(self, password, salt=None):
-        """Хеширует пароль с солью"""
-        if salt is None:
-            salt = os.urandom(16).hex()
-        hashed = hashlib.sha256((password + salt).encode()).hexdigest()
-        return hashed, salt
-    
-    @log_action('REGISTER', verbose=True)
-    def register(self, username, password):
-        """Регистрация нового пользователя"""
-        users = self._load_json('users.json')
-    
-        # Проверка уникальности username
-        if any(user.get('username') == username for user in users):
-            return False, f"Username '{username}' already taken"
-    
-        # Проверка длины пароля
-        if len(password) < 4:
-            return False, "Password must be at least 4 characters long"
-    
-        # Генерация user_id
-        user_ids = [user.get('user_id', 0) for user in users]
-        user_id = max(user_ids, default=0) + 1
-    
-        # Хеширование пароля
-        hashed_password, salt = self._hash_password(password)
-    
-        # Создание пользователя
-        new_user = {
-            'user_id': user_id,
-            'username': username,
-            'hashed_password': hashed_password,
-            'salt': salt,
-            'registration_date': datetime.now().isoformat()
-        }
-    
-        users.append(new_user)
-        self._save_json('users.json', users)
-    
-        # Создание пустого портфеля
-        portfolios = self._load_json('portfolios.json')
-        new_portfolio = {
-            'user_id': user_id,
-            'wallets': {
-                'USD': {'balance': 1000.0}  # Начальный баланс
-            }
-        }
-        portfolios.append(new_portfolio)
-        self._save_json('portfolios.json', portfolios)
-    
-        logger.info(f"User {username} registered successfully")
-        return True, f"User '{username}' registered successfully (id={user_id})"
-    
-    @log_action('LOGIN')
-    def login(self, username, password):
-        """Аутентификация пользователя"""
-        users = self._load_json('users.json')
-        
-        user_data = next((user for user in users if user.get('username') == username), None)
-        if not user_data:
-            return False, f"User '{username}' not found"
-        
-        # Проверка пароля
-        test_hash, _ = self._hash_password(password, user_data.get('salt'))
-        if test_hash != user_data.get('hashed_password'):
-            return False, "Invalid password"
-        
-        self.current_user = user_data
-        self._save_session(user_data)
-        logger.info(f"User {username} logged in")
-        return True, f"Logged in as '{username}'"
-    
-    def logout(self):
-        """Выход из системы"""
-        if self.current_user:
-            username = self.current_user.get('username')
-            self._clear_session()
-            return f"Logged out from '{username}'"
-        return "Not logged in"
     
     def _require_login(self):
         """Проверяет, что пользователь авторизован"""
         if not self.current_user:
-            raise PermissionError("Please login first. Use: poetry run valutatrade login --username USERNAME --password PASSWORD")
+            raise AuthenticationError("Please login first")
     
-    def show_portfolio(self, base_currency='USD'):
-        """Показывает портфель пользователя"""
-        self._require_login()
-        
-        portfolios = self._load_json('portfolios.json')
-        user_portfolio = next(
-            (p for p in portfolios if p.get('user_id') == self.current_user.get('user_id')), 
-            None
+    # ==================== КОМАНДЫ ПОЛЬЗОВАТЕЛЯ ====================
+    
+    def handle_register(self, args):
+        """Обработка команды регистрации"""
+        success, message, user = UserUseCases.register_user(
+            args.username, args.password
         )
         
-        if not user_portfolio or not user_portfolio.get('wallets'):
-            return "Portfolio is empty"
-        
-        # Загружаем курсы из rates.json
-        rates_data = self._load_json('rates.json')
-        rates = rates_data.get('pairs', {})
-        
-        result = f"Portfolio of user '{self.current_user['username']}' (base: {base_currency}):\n"
-        total_value = 0.0
-        
-        for currency, wallet_data in user_portfolio['wallets'].items():
-            balance = wallet_data['balance']
-            if currency == base_currency:
-                value = balance
-            else:
-                rate_key = f"{currency}_{base_currency}"
-                rate_data = rates.get(rate_key, {})
-                rate = rate_data.get('rate', 0)
-                value = balance * rate
-            total_value += value
-            result += f"- {currency}: {balance:.2f} → {value:.2f} {base_currency}\n"
-        
-        result += f"{'-'*40}\nTOTAL: {total_value:.2f} {base_currency}"
-        return result
-
-    # buy/sell операции
-    @log_action('BUY', verbose=True)
-    def buy_currency(self, currency, amount):
-        """Покупка валюты"""
-        self._require_login()
-        
-        try:
-            # Валидация с использованием реестра валют
-            currency_obj = CurrencyRegistry.get_currency(currency)
-            
-            if amount <= 0:
-                raise ValueError("Amount must be positive")
-            
-            if currency == 'USD':
-                raise ValueError("Cannot buy USD with USD")
-            
-            # Загружаем данные
-            portfolios = self._load_json('portfolios.json')
-            user_portfolio = next(
-                (p for p in portfolios if p.get('user_id') == self.current_user.get('user_id')), 
-                None
-            )
-            
-            if not user_portfolio:
-                raise ValueError("Portfolio not found")
-            
-            # Получаем курс
-            rates_data = self._load_json('rates.json')
-            rate_key = f"{currency}_USD"
-            rate_data = rates_data.get('pairs', {}).get(rate_key, {})
-            
-            if not rate_data:
-                raise CurrencyNotFoundError(currency)
-            
-            rate = rate_data.get('rate', 0)
-            if rate <= 0:
-                raise ValueError(f"Invalid exchange rate for {currency}")
-            
-            cost_usd = amount * rate
-            
-            # Проверяем достаточно ли USD
-            usd_balance = user_portfolio['wallets'].get('USD', {}).get('balance', 0)
-            if usd_balance < cost_usd:
-                raise InsufficientFundsError(usd_balance, cost_usd, 'USD')
-            
-            # ВЫПОЛНЯЕМ ПОКУПКУ
-            old_usd = usd_balance
-            old_currency = user_portfolio['wallets'].get(currency, {}).get('balance', 0)
-            
-            # 1. Снимаем USD
-            user_portfolio['wallets']['USD']['balance'] = old_usd - cost_usd
-            
-            # 2. Добавляем купленную валюту
-            if currency not in user_portfolio['wallets']:
-                user_portfolio['wallets'][currency] = {'balance': 0}
-            
-            user_portfolio['wallets'][currency]['balance'] = old_currency + amount
-            
-            # Сохраняем изменения
-            self._save_json('portfolios.json', portfolios)
-            
-            result = (f"Successfully bought {amount:.4f} {currency} for {cost_usd:.2f} USD\n"
-                     f"   Rate: {rate} {currency}/USD\n"
-                     f"   {currency}: {old_currency:.4f} → {old_currency + amount:.4f}\n"
-                     f"   USD: {old_usd:.2f} → {old_usd - cost_usd:.2f}")
-            
-            logger.info(f"Buy operation completed: {amount} {currency} at rate {rate}")
-            return result
-            
-        except (CurrencyNotFoundError, InsufficientFundsError, ValueError) as e:
-            logger.error(f"Buy operation failed: {str(e)}")
-            return f"Error: {str(e)}"
-    
-    @log_action('SELL', verbose=True)
-    def sell_currency(self, currency, amount):
-        """Продажа валюты"""
-        self._require_login()
-        
-        try:
-            # Валидация с использованием реестра валют
-            currency_obj = CurrencyRegistry.get_currency(currency)
-            
-            if amount <= 0:
-                raise ValueError("Amount must be positive")
-            
-            if currency == 'USD':
-                raise ValueError("Cannot sell USD for USD")
-            
-            # Загружаем данные
-            portfolios = self._load_json('portfolios.json')
-            user_portfolio = next(
-                (p for p in portfolios if p.get('user_id') == self.current_user.get('user_id')), 
-                None
-            )
-            
-            if not user_portfolio:
-                raise ValueError("Portfolio not found")
-            
-            # Проверяем наличие валюты
-            if currency not in user_portfolio['wallets']:
-                raise ValueError(f"You don't have {currency} wallet")
-            
-            currency_balance = user_portfolio['wallets'][currency]['balance']
-            if currency_balance < amount:
-                raise InsufficientFundsError(currency_balance, amount, currency)
-            
-            # Получаем курс
-            rates_data = self._load_json('rates.json')
-            rate_key = f"{currency}_USD"
-            rate_data = rates_data.get('pairs', {}).get(rate_key, {})
-            
-            if not rate_data:
-                raise CurrencyNotFoundError(currency)
-            
-            rate = rate_data.get('rate', 0)
-            if rate <= 0:
-                raise ValueError(f"Invalid exchange rate for {currency}")
-            
-            revenue_usd = amount * rate
-            
-            # ВЫПОЛНЯЕМ ПРОДАЖУ
-            old_currency = currency_balance
-            usd_balance = user_portfolio['wallets'].get('USD', {}).get('balance', 0)
-            
-            # 1. Снимаем проданную валюту
-            user_portfolio['wallets'][currency]['balance'] = old_currency - amount
-            
-            # 2. Добавляем USD
-            user_portfolio['wallets']['USD'] = {'balance': usd_balance + revenue_usd}
-            
-            # Сохраняем изменения
-            self._save_json('portfolios.json', portfolios)
-            
-            result = (f"Successfully sold {amount:.4f} {currency} for {revenue_usd:.2f} USD\n"
-                     f"   Rate: {rate} {currency}/USD\n"
-                     f"   {currency}: {old_currency:.4f} → {old_currency - amount:.4f}\n"
-                     f"   USD: {usd_balance:.2f} → {usd_balance + revenue_usd:.2f}")
-            
-            logger.info(f"Sell operation completed: {amount} {currency} at rate {rate}")
-            return result
-            
-        except (CurrencyNotFoundError, InsufficientFundsError, ValueError) as e:
-            logger.error(f"Sell operation failed: {str(e)}")
-            return f"Error: {str(e)}"
-    
-    def get_rate(self, from_currency, to_currency):
-        rates_data = self._load_json('rates.json')
-        rates = rates_data.get('pairs', {})
-        
-        rate_key = f"{from_currency}_{to_currency}"
-        rate_data = rates.get(rate_key, {})
-        
-        if rate_data:
-            rate = rate_data.get('rate', 'N/A')
-            updated = rate_data.get('updated_at', 'Unknown')
-            return f"Rate {from_currency}→{to_currency}: {rate} (updated: {updated})"
+        if success:
+            print(f"{message}")
+            print(f"Use 'login --username {args.username} --password {args.password}' to login")
         else:
-            return f"Rate {from_currency}→{to_currency} not found in cache"
-
-    def run(self):
-        """Основной цикл CLI"""
-        parser = argparse.ArgumentParser(description='Currency Wallet CLI')
-        subparsers = parser.add_subparsers(dest='command', help='Available commands')
+            print(f"{message}")
+    
+    def handle_login(self, args):
+        """Обработка команды входа в систему"""
+        success, message, user = UserUseCases.login_user(
+            args.username, args.password
+        )
         
-        # Register command
+        if success and user:
+            self.current_user = user
+            self._save_session(user.user_id)
+            print(f"{message}")
+        else:
+            print(f"{message}")
+    
+    def handle_logout(self, args):
+        """Обработка команды выхода из системы"""
+        if self.current_user:
+            username = self.current_user.username
+            self._clear_session()
+            print(f"Logged out from '{username}'")
+        else:
+            print("Not logged in")
+    
+    def handle_status(self, args):
+        """Обработка команды статуса"""
+        if self.current_user:
+            print(f"Logged in as: {self.current_user.username}")
+            print(f"User ID: {self.current_user.user_id}")
+            print(f"Registered: {self.current_user.registration_date}")
+            
+            # Информация о сессии
+            try:
+                with open(self.session_file, 'r', encoding='utf-8') as f:
+                    session_data = json.load(f)
+                    if 'user_id' in session_data:
+                        print("   Session active: Yes")
+            except:
+                print("   Session active: No")
+        else:
+            print("Not logged in")
+            print("Use 'login --username USERNAME --password PASSWORD' to login")
+    
+    # ==================== КОМАНДЫ ПОРТФЕЛЯ ====================
+    
+    def handle_show_portfolio(self, args):
+        """Обработка команды показа портфеля"""
+        try:
+            self._require_login()
+            
+            success, message, portfolio_data = PortfolioUseCases.get_portfolio_info(
+                self.current_user.user_id, args.base
+            )
+            
+            if success:
+                if portfolio_data['wallets']:
+                    formatted = PortfolioUseCases.format_portfolio_display(portfolio_data)
+                    print(formatted)
+                else:
+                    print("Portfolio is empty")
+                    print("Use 'buy --currency CURRENCY --amount AMOUNT' to add currencies")
+            else:
+                print(f"{message}")
+                
+        except AuthenticationError as e:
+            print(f"{str(e)}")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_buy(self, args):
+        """Обработка команды покупки валюты"""
+        try:
+            self._require_login()
+            
+            success, message, operation_data = PortfolioUseCases.buy_currency(
+                self.current_user.user_id, args.currency, args.amount
+            )
+            
+            if success and operation_data:
+                formatted = PortfolioUseCases.format_operation_display(operation_data)
+                print(formatted)
+            else:
+                print(f"{message}")
+                
+        except AuthenticationError as e:
+            print(f"{str(e)}")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_sell(self, args):
+        """Обработка команды продажи валюты"""
+        try:
+            self._require_login()
+            
+            success, message, operation_data = PortfolioUseCases.sell_currency(
+                self.current_user.user_id, args.currency, args.amount
+            )
+            
+            if success and operation_data:
+                formatted = PortfolioUseCases.format_operation_display(operation_data)
+                print(formatted)
+            else:
+                print(f"{message}")
+                
+        except AuthenticationError as e:
+            print(f"{str(e)}")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    # ==================== КОМАНДЫ КУРСОВ ВАЛЮТ ====================
+    
+    def handle_get_rate(self, args):
+        """Обработка команды получения курса"""
+        try:
+            from_currency = getattr(args, 'from_currency')
+            to_currency = args.to
+            
+            success, message, rate_data = RatesUseCases.get_exchange_rate(
+                from_currency, to_currency
+            )
+            
+            if success and rate_data:
+                formatted = RatesUseCases.format_rate_display(rate_data)
+                print(formatted)
+                
+                # Проверяем свежесть курсов
+                freshness_result = RatesUseCases.check_rates_freshness()
+                if not freshness_result[0]:
+                    print(f"Warning: {freshness_result[1]}")
+                    print("Use 'update-rates' to refresh rates")
+            else:
+                print(f"{message}")
+                print("Use 'update-rates' to fetch latest rates")
+                
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_list_currencies(self, args):
+        """Обработка команды списка валют"""
+        try:
+            currencies = CurrencyRegistry.list_currencies()
+            
+            table = PrettyTable()
+            table.field_names = ["Code", "Name", "Type", "Info"]
+            table.align["Code"] = "l"
+            table.align["Name"] = "l"
+            table.align["Type"] = "l"
+            table.align["Info"] = "l"
+            
+            for currency_code in currencies:
+                try:
+                    currency = CurrencyRegistry.get_currency(currency_code)
+                    currency_type = "Crypto" if hasattr(currency, 'algorithm') else "Fiat"
+                    
+                    # Сокращаем информацию для таблицы
+                    info = currency.get_display_info()
+                    if len(info) > 50:
+                        info = info[:47] + "..."
+                    
+                    table.add_row([
+                        currency_code,
+                        currency.name,
+                        currency_type,
+                        info
+                    ])
+                except Exception:
+                    table.add_row([currency_code, "Unknown", "Unknown", "Error"])
+            
+            print("Available Currencies:")
+            print(table)
+            print(f"\nTotal: {len(currencies)} currencies")
+            
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_currency_info(self, args):
+        """Обработка команды информации о валюте"""
+        try:
+            info = CurrencyRegistry.get_currency_info(args.currency)
+            print("Currency Information:")
+            print(f"{info}")
+            
+            # Дополнительная информация
+            currency_type = CurrencyRegistry.get_currency_type(args.currency)
+            print(f"   Type: {currency_type.upper()}")
+            
+            # Проверяем наличие курса
+            rate = self.db.get_exchange_rate(args.currency, 'USD')
+            if rate:
+                print(f"Current rate to USD: {rate:.6f}")
+            else:
+                print("Rate to USD: Not available")
+                
+        except ValueError as e:
+            print(f"{str(e)}")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    # ==================== КОМАНДЫ ПАРСЕРА ====================
+    
+    def handle_update_rates(self, args):
+        """Обработка команды обновления курсов"""
+        try:
+            print("Updating exchange rates...")
+            
+            # Используем указанный источник если задан
+            if args.source:
+                if args.source.lower() == 'coingecko':
+                    client = ApiClientFactory.create_client(self.parser_config, 'coingecko')
+                    self.rates_updater.clients = [client]
+                elif args.source.lower() == 'exchangerate':
+                    client = ApiClientFactory.create_client(self.parser_config, 'exchangerate')
+                    self.rates_updater.clients = [client]
+                elif args.source.lower() == 'mock':
+                    client = ApiClientFactory.create_client(self.parser_config, 'mock')
+                    self.rates_updater.clients = [client]
+                else:
+                    print(f"Unknown source: {args.source}")
+                    print("Available sources: coingecko, exchangerate, mock")
+                    return
+            
+            result = self.rates_updater.run_update()
+            
+            if result.get('status') == 'success':
+                print("Rates update completed successfully!")
+                print(f"Fetched: {result['total_rates_fetched']} rates")
+                print(f"Saved: {result['rates_saved']} rates")
+                print(f"Crypto: {result['crypto_rates']}, Fiat: {result['fiat_rates']}")
+                print(f"Time: {result['execution_time_seconds']}s")
+                
+                # Показываем несколько примеров обновленных курсов
+                rates = self.rates_storage.get_all_rates()
+                if rates:
+                    sample_pairs = list(rates.keys())[:5]
+                    print("\nSample updated rates:")
+                    for pair in sample_pairs:
+                        rate_data = rates[pair]
+                        print(f"   {pair}: {rate_data.get('rate'):.6f} ({rate_data.get('source')})")
+            else:
+                print("Rates update failed")
+                
+        except Exception as e:
+            print(f"Error updating rates: {str(e)}")
+    
+    def handle_show_rates(self, args):
+        """Обработка команды показа курсов"""
+        try:
+            rates = self.rates_storage.get_all_rates()
+            
+            if not rates:
+                print("No exchange rates available")
+                print("Use 'update-rates' to fetch rates")
+                return
+            
+            # Фильтрация если указана валюта
+            filtered_rates = {}
+            if args.currency:
+                target_currency = args.currency.upper()
+                for pair, rate_data in rates.items():
+                    if target_currency in pair:
+                        filtered_rates[pair] = rate_data
+            else:
+                filtered_rates = rates
+            
+            if not filtered_rates:
+                print(f"No rates found for currency: {args.currency}")
+                return
+            
+            # Сортировка
+            sorted_pairs = sorted(filtered_rates.items())
+            
+            # Применяем лимит если задан --top
+            if args.top and args.top > 0:
+                # Сортируем по значению курса (для USD пар)
+                usd_pairs = [(pair, data) for pair, data in sorted_pairs if pair.endswith('_USD')]
+                usd_pairs.sort(key=lambda x: x[1].get('rate', 0), reverse=True)
+                sorted_pairs = usd_pairs[:args.top]
+            
+            # Форматируем вывод
+            table = PrettyTable()
+            table.field_names = ["Pair", "Rate", "Updated", "Source"]
+            table.align["Pair"] = "l"
+            table.align["Rate"] = "r"
+            table.align["Updated"] = "l"
+            table.align["Source"] = "l"
+            
+            for pair, rate_data in sorted_pairs:
+                rate = rate_data.get('rate', 0)
+                updated = rate_data.get('updated_at', 'Unknown')
+                source = rate_data.get('source', 'Unknown')
+                
+                # Форматируем время
+                if updated != 'Unknown':
+                    try:
+                        dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                        updated = dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        pass
+                
+                table.add_row([pair, f"{rate:.6f}", updated, source])
+            
+            total_rates = self.rates_storage.get_stats()['current_rates_count']
+            print(f"Exchange Rates (showing {len(sorted_pairs)} of {total_rates}):")
+            print(table)
+            
+            # Информация о свежести
+            freshness_check = RatesUseCases.check_rates_freshness()
+            if freshness_check[0]:
+                print(f"{freshness_check[1]}")
+            else:
+                print(f"{freshness_check[1]}")
+                print("   Use 'update-rates' to refresh")
+            
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_parser_status(self, args):
+        """Обработка команды статуса парсера"""
+        try:
+            # Статус обновлений
+            updater_status = self.rates_updater.get_status()
+            freshness = self.rates_updater.check_freshness()
+            
+            # Статистика хранилища
+            storage_stats = self.rates_storage.get_stats()
+            
+            print("Parser Service Status:")
+            print("=" * 50)
+            
+            print("Update Status:")
+            print(f"Last update: {updater_status['last_update_time'] or 'Never'}")
+            print(f"Update count: {updater_status['update_count']}")
+            print(f"Successful: {updater_status['successful_updates']}")
+            print(f"Failed: {updater_status['failed_updates']}")
+            print(f"Clients: {', '.join(updater_status['clients'])}")
+            
+            print("\nFreshness Check:")
+            print(f"Status: {'Fresh' if freshness['is_fresh'] else 'Outdated'}")
+            print(f"Message: {freshness['message']}")
+            print(f"TTL: {freshness['ttl_seconds']}s")
+            
+            print("\nStorage Stats:")
+            print(f"Current rates: {storage_stats['current_rates_count']}")
+            print(f"Crypto pairs: {storage_stats['crypto_pairs_count']}")
+            print(f"Fiat pairs: {storage_stats['fiat_pairs_count']}")
+            print(f"File size: {storage_stats['rates_file_size_kb']} KB")
+            print(f"Last refresh: {storage_stats['last_refresh']}")
+            
+            print("\nConfiguration:")
+            print(f"Update interval: {self.parser_config.UPDATE_INTERVAL}s")
+            print(f"Rates TTL: {self.parser_config.RATES_TTL}s")
+            print(f"Request timeout: {self.parser_config.REQUEST_TIMEOUT}s")
+            
+            # Проверка API ключей
+            print("\nAPI Keys:")
+            print(f"ExchangeRate-API: {'Set' if self.parser_config.EXCHANGERATE_API_KEY else 'Not set'}")
+            print(f"CoinGecko: {'Set' if self.parser_config.COINGECKO_API_KEY else 'Not set'}")
+            
+            print("=" * 50)
+            
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    # ==================== СЛУЖЕБНЫЕ КОМАНДЫ ====================
+    
+    def handle_db_stats(self, args):
+        """Обработка команды статистики базы данных"""
+        try:
+            stats = self.db.get_database_stats()
+            
+            print("Database Statistics:")
+            print("=" * 50)
+            
+            print(f"Users: {stats['users']}")
+            print(f"Portfolios: {stats['portfolios']}")
+            print(f"Exchange rates: {stats['exchange_rates']}")
+            print(f"Transactions: {stats['transactions']}")
+            print(f"Total size: {stats['total_size_kb']:.2f} KB")
+            print(f"Last rates update: {stats['last_rates_update']}")
+            
+            print(f"\nData directory: {self.db.data_dir.absolute()}")
+            
+            # Показываем файлы
+            print("\nFiles:")
+            for file in self.db.data_dir.glob("*.json"):
+                size_kb = file.stat().st_size / 1024
+                print(f"{file.name}: {size_kb:.2f} KB")
+            
+            print("=" * 50)
+            
+        except Exception as e:
+            print(f"Error: {str(e)}")
+    
+    def handle_help(self, args):
+        """Обработка команды помощи"""
+        self._print_help()
+    
+    def _print_help(self):
+        """Выводит справку по командам"""
+        help_text = """
+╔══════════════════════════════════════════════════════════════╗
+║                  VALUTATRADE HUB - HELP                      ║
+╚══════════════════════════════════════════════════════════════╝
+
+USER MANAGEMENT:
+  register --username USERNAME --password PASSWORD
+    Register a new user
+  
+  login --username USERNAME --password PASSWORD
+    Login to the system
+  
+  logout
+    Logout from the system
+  
+  status
+    Show current session status
+
+PORTFOLIO OPERATIONS:
+  show-portfolio [--base CURRENCY]
+    Show your portfolio (default base: USD)
+  
+  buy --currency CURRENCY --amount AMOUNT
+    Buy currency (e.g., buy --currency EUR --amount 100)
+  
+  sell --currency CURRENCY --amount AMOUNT
+    Sell currency (e.g., sell --currency BTC --amount 0.5)
+
+CURRENCY INFORMATION:
+  list-currencies
+    List all available currencies
+  
+  currency-info --currency CURRENCY
+    Get detailed information about a currency
+  
+  get-rate --from CURRENCY --to CURRENCY
+    Get exchange rate (e.g., get-rate --from USD --to EUR)
+
+PARSER SERVICE:
+  update-rates [--source coingecko|exchangerate|mock]
+    Update exchange rates from APIs
+  
+  show-rates [--currency CURRENCY] [--top N]
+    Show exchange rates with filters
+  
+  parser-status
+    Show parser service status
+
+SYSTEM COMMANDS:
+  db-stats
+    Show database statistics
+  
+  help
+    Show this help message
+
+EXAMPLES:
+  poetry run valutatrade register --username alice --password 1234
+  poetry run valutatrade login --username alice --password 1234
+  poetry run valutatrade buy --currency EUR --amount 100
+  poetry run valutatrade show-portfolio --base USD
+  poetry run valutatrade update-rates
+  poetry run valutatrade show-rates --top 5
+
+Data is stored in: {data_dir}
+Logs are stored in: {log_dir}
+        """.format(
+            data_dir=self.data_dir,
+            log_dir=self.settings.get('log_dir', 'logs')
+        )
+        
+        print(help_text)
+    
+    # ==================== ОСНОВНОЙ МЕТОД ====================
+    
+    def run(self):
+        """Основной метод запуска CLI"""
+        parser = argparse.ArgumentParser(
+            description='ValutaTrade Hub - Currency Trading Platform',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=self._print_help()
+        )
+        
+        subparsers = parser.add_subparsers(
+            dest='command',
+            title='Available Commands',
+            metavar='COMMAND'
+        )
+        
+        # Регистрируем все команды
+        self._register_commands(subparsers)
+        
+        # Парсим аргументы
+        args = parser.parse_args()
+        
+        # Если команда не указана, показываем help
+        if not args.command:
+            self._print_help()
+            return
+        
+        # Выполняем команду
+        try:
+            self._execute_command(args)
+        except KeyboardInterrupt:
+            print("\n\nOperation cancelled by user")
+            sys.exit(0)
+        except Exception as e:
+            print(f"\nUnexpected error: {str(e)}")
+            logger.error(f"CLI error: {e}", exc_info=True)
+            sys.exit(1)
+    
+    def _register_commands(self, subparsers):
+        """Регистрирует все команды CLI"""
+        
+        # register
         register_parser = subparsers.add_parser('register', help='Register new user')
         register_parser.add_argument('--username', required=True, help='Username')
         register_parser.add_argument('--password', required=True, help='Password')
+        register_parser.set_defaults(handler=self.handle_register)
         
-        # Login command
+        # login
         login_parser = subparsers.add_parser('login', help='Login to system')
         login_parser.add_argument('--username', required=True, help='Username')
         login_parser.add_argument('--password', required=True, help='Password')
+        login_parser.set_defaults(handler=self.handle_login)
         
-        # Logout command
-        subparsers.add_parser('logout', help='Logout from system')
+        # logout
+        logout_parser = subparsers.add_parser('logout', help='Logout from system')
+        logout_parser.set_defaults(handler=self.handle_logout)
         
-        # Show portfolio command
-        portfolio_parser = subparsers.add_parser('show-portfolio', help='Show user portfolio')
-        portfolio_parser.add_argument('--base', default='USD', help='Base currency')
+        # status
+        status_parser = subparsers.add_parser('status', help='Show session status')
+        status_parser.set_defaults(handler=self.handle_status)
         
-        # Buy command
+        # show-portfolio
+        portfolio_parser = subparsers.add_parser('show-portfolio', help='Show portfolio')
+        portfolio_parser.add_argument('--base', default='USD', help='Base currency (default: USD)')
+        portfolio_parser.set_defaults(handler=self.handle_show_portfolio)
+        
+        # buy
         buy_parser = subparsers.add_parser('buy', help='Buy currency')
-        buy_parser.add_argument('--currency', required=True, help='Currency code')
+        buy_parser.add_argument('--currency', required=True, help='Currency code (e.g., EUR)')
         buy_parser.add_argument('--amount', type=float, required=True, help='Amount to buy')
+        buy_parser.set_defaults(handler=self.handle_buy)
         
-        # Sell command
+        # sell
         sell_parser = subparsers.add_parser('sell', help='Sell currency')
         sell_parser.add_argument('--currency', required=True, help='Currency code')
         sell_parser.add_argument('--amount', type=float, required=True, help='Amount to sell')
+        sell_parser.set_defaults(handler=self.handle_sell)
         
-        # Get rate command
+        # get-rate
         rate_parser = subparsers.add_parser('get-rate', help='Get exchange rate')
         rate_parser.add_argument('--from', required=True, dest='from_currency', help='From currency')
         rate_parser.add_argument('--to', required=True, help='To currency')
+        rate_parser.set_defaults(handler=self.handle_get_rate)
         
-        # Status command
-        subparsers.add_parser('status', help='Show current session status')
-        
-        # List currencies command
+        # list-currencies
         currencies_parser = subparsers.add_parser('list-currencies', help='List available currencies')
-
-        # Currency info command
+        currencies_parser.set_defaults(handler=self.handle_list_currencies)
+        
+        # currency-info
         info_parser = subparsers.add_parser('currency-info', help='Get currency information')
         info_parser.add_argument('--currency', required=True, help='Currency code')
+        info_parser.set_defaults(handler=self.handle_currency_info)
         
-        args = parser.parse_args()
+        # update-rates
+        update_parser = subparsers.add_parser('update-rates', help='Update exchange rates')
+        update_parser.add_argument('--source', choices=['coingecko', 'exchangerate', 'mock'],
+                                  help='API source (default: all available)')
+        update_parser.set_defaults(handler=self.handle_update_rates)
         
-        if args.command == 'register':
-            success, message = self.register(args.username, args.password)
-            print(message)
+        # show-rates
+        show_rates_parser = subparsers.add_parser('show-rates', help='Show exchange rates')
+        show_rates_parser.add_argument('--currency', help='Filter by currency')
+        show_rates_parser.add_argument('--top', type=int, help='Show top N rates by value')
+        show_rates_parser.set_defaults(handler=self.handle_show_rates)
         
-        elif args.command == 'login':
-            success, message = self.login(args.username, args.password)
-            print(message)
+        # parser-status
+        parser_status_parser = subparsers.add_parser('parser-status', help='Show parser service status')
+        parser_status_parser.set_defaults(handler=self.handle_parser_status)
         
-        elif args.command == 'logout':
-            message = self.logout()
-            print(message)
+        # db-stats
+        db_stats_parser = subparsers.add_parser('db-stats', help='Show database statistics')
+        db_stats_parser.set_defaults(handler=self.handle_db_stats)
         
-        elif args.command == 'show-portfolio':
-            try:
-                result = self.show_portfolio(args.base)
-                print(result)
-            except PermissionError as e:
-                print(e)
-        
-        elif args.command == 'buy':
-            try:
-                result = self.buy_currency(args.currency, args.amount)
-                print(result)
-            except PermissionError as e:
-                print(e)
-        
-        elif args.command == 'sell':
-            try:
-                result = self.sell_currency(args.currency, args.amount)
-                print(result)
-            except PermissionError as e:
-                print(e)
-        
-        elif args.command == 'get-rate':
-            result = self.get_rate(getattr(args, 'from_currency'), args.to)
-            print(result)
-        
-        elif args.command == 'status':
-            if self.current_user:
-                print(f"Logged in as: {self.current_user.get('username')} (ID: {self.current_user.get('user_id')})")
-            else:
-                print("Not logged in")
-        
-        elif args.command == 'list-currencies':
-            currencies = CurrencyRegistry.list_currencies()
-            print("Available currencies:")
-            for currency in currencies:
-                info = CurrencyRegistry.get_currency_info(currency)
-                print(f"  - {info}")
-        
-        elif args.command == 'currency-info':
-            try:
-                info = CurrencyRegistry.get_currency_info(args.currency)
-                print(info)
-            except ValueError as e:
-                print(f"{str(e)}")
-        
+        # help
+        help_parser = subparsers.add_parser('help', help='Show help message')
+        help_parser.set_defaults(handler=self.handle_help)
+    
+    def _execute_command(self, args):
+        """Выполняет команду на основе переданных аргументов"""
+        if hasattr(args, 'handler'):
+            args.handler(args)
         else:
-            parser.print_help()
+            print(f"Unknown command: {args.command}")
+            print("Use 'help' to see available commands")
+
 
 def main():
-    cli = CLIInterface()
-    cli.run()
+    """Точка входа в приложение"""
+    try:
+        cli = CLIInterface()
+        cli.run()
+    except KeyboardInterrupt:
+        print("\nGoodbye!")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nFatal error: {str(e)}")
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
