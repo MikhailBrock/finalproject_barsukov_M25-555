@@ -1,48 +1,47 @@
+"""
+Пользовательские исключения
+"""
+
+
 class InsufficientFundsError(Exception):
-    def __init__(self, available: float, required: float, currency: str):
+    """Недостаточно средств"""
+
+    def __init__(self, available: float, required: float, code: str):
         self.available = available
         self.required = required
-        self.currency = currency
+        self.code = code
         super().__init__(
-            f"Insufficient funds: available {available:.4f} {currency}, "
-            f"required {required:.4f} {currency}"
+            f"Недостаточно средств: доступно {available} {code}, "
+            f"требуется {required} {code}"
         )
 
 
 class CurrencyNotFoundError(Exception):
-    def __init__(self, currency_code: str):
-        self.currency_code = currency_code
-        super().__init__(f"Unknown currency '{currency_code}'")
+    """Неизвестная валюта"""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(f"Неизвестная валюта '{code}'")
 
 
 class ApiRequestError(Exception):
-    def __init__(self, reason: str, status_code: int = None):
+    """Сбой внешнего API"""
+
+    def __init__(self, reason: str):
         self.reason = reason
-        self.status_code = status_code
-        message = f"API request error: {reason}"
-        if status_code:
-            message += f" (status: {status_code})"
-        super().__init__(message)
+        super().__init__(f"Ошибка при обращении к внешнему API: {reason}")
+
+
+class UserNotFoundError(Exception):
+    """Пользователь не найден"""
+
+    def __init__(self, username: str):
+        self.username = username
+        super().__init__(f"Пользователь '{username}' не найден")
 
 
 class AuthenticationError(Exception):
-    def __init__(self, message: str = "Authentication failed"):
-        super().__init__(message)
+    """Ошибка аутентификации"""
 
-
-class ValidationError(Exception):
-    def __init__(self, field: str, message: str):
-        self.field = field
-        self.message = message
-        super().__init__(f"Validation error in '{field}': {message}")
-
-
-class PortfolioNotFoundError(Exception):
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        super().__init__(f"Portfolio for user {user_id} not found")
-
-
-class SessionError(Exception):
-    def __init__(self, message: str = "Session error"):
+    def __init__(self, message: str = "Неверный пароль"):
         super().__init__(message)

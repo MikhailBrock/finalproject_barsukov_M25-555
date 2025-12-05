@@ -1,4 +1,6 @@
-"""ValutaTrade Hub - Currency trading wallet simulation platform"""
+"""
+ValutaTrade Hub - платформа для торговли валютами
+"""
 
-__version__ = "0.1.0"
-__author__ = "Your Name"
+__version__ = "1.0.0"
+__author__ = "Барсуков Михаил Алексеевич"

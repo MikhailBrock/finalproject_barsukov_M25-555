@@ -1,37 +1,37 @@
-[tool.poetry]
-name = "finalproject-barsukov-m25-555"
-version = "1.0.0"
-description = "Currency trading wallet simulation platform"
-authors = ["Барсуков Михаил Алексеевич <Mr.Brock63@yandex.ru>"]
-readme = "README.md"
-packages = [{include = "valutatrade_hub", from = "."}]
-
-[tool.poetry.dependencies]
-python = "^3.8"
-prettytable = "^3.9.0"
-requests = "^2.31.0"
-schedule = "^1.2.0"
-
-[tool.poetry.group.dev.dependencies]
-ruff = "^0.1.6"
-pytest = "^7.4.0"
-
-[tool.poetry.scripts]
-valutatrade = "main:main"
-
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.poetry]
+name = "valutatrade-hub"
+version = "1.0.0"
+description = "Валютный кошелек с парсингом курсов"
+authors = ["Mikhail Barsukov <Mr.Brock@yandex.ru>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+prettytable = "^3.10.0"
+requests = "^2.32.3"
+toml = "^0.10.2"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.4.4"
+
+[tool.valutatrade]
+data_dir = "data"
+rates_ttl_seconds = 300
+default_base_currency = "USD"
+log_level = "INFO"
+log_file = "logs/actions.log"
+
 [tool.ruff]
-line-length = 100
-target-version = "py38"
+target-version = "py39"
+line-length = 88
 
-[tool.ruff.format]
-quote-style = "double"
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = []
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

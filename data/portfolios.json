@@ -1,21 +1,21 @@
-[
-  {
-    "user_id": 1,
-    "wallets": {
-      "USD": {
-        "balance": 1000.0
+{
+  "portfolios": [
+    {
+      "user_id": 1,
+      "wallets": {
+        "BTC": {
+          "currency_code": "BTC",
+          "balance": 0.04
+        },
+        "XYZ": {
+          "currency_code": "XYZ",
+          "balance": 1.0
+        }
       }
+    },
+    {
+      "user_id": 2,
+      "wallets": {}
     }
-  },
-  {
-    "user_id": 2,
-    "wallets": {
-      "USD": {
-        "balance": 967.6
-      },
-      "EUR": {
-        "balance": 30.0
-      }
-    }
-  }
-]
+  ]
+}

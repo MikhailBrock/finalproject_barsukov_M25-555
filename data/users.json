@@ -1,16 +1,18 @@
-[
-  {
-    "user_id": 1,
-    "username": "alice",
-    "hashed_password": "dfb4bcb26ae7c61bdf6985c10817d80f644d2d5f5638ab0a8a3f167cb4683cd3",
-    "salt": "f574f60b783b53a755d9e4593f477969",
-    "registration_date": "2025-11-25T19:45:08.000698"
-  },
-  {
-    "user_id": 2,
-    "username": "testuser",
-    "hashed_password": "99b1b319c000adf917a6adc1ae1b6567357154ea8ad0f42f71b058ad6750ffab",
-    "salt": "880d42a614ecb5d2c37296729db1bf48",
-    "registration_date": "2025-12-03T19:41:53.569457"
-  }
-]
+{
+  "users": [
+    {
+      "user_id": 1,
+      "username": "demo_user",
+      "hashed_password": "fd2f51ef01fb47e341074d9f1d7973fae7fa9267f9e87843685475735d755470",
+      "salt": "69c59a7f88847969",
+      "registration_date": "2025-12-05T22:56:08.502777"
+    },
+    {
+      "user_id": 2,
+      "username": "mikhail",
+      "hashed_password": "1303c6eb3ed291cf8ca8372cae9eae05fc1d4c09ef59b8f4018551ff36249fa2",
+      "salt": "7332035ef4e8c385",
+      "registration_date": "2025-12-05T22:57:43.723139"
+    }
+  ]
+}
