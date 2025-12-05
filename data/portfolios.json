@@ -12,10 +12,6 @@
           "balance": 1.0
         }
       }
-    },
-    {
-      "user_id": 2,
-      "wallets": {}
     }
   ]
 }
