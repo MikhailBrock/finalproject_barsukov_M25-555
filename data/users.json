@@ -3,9 +3,16 @@
     {
       "user_id": 1,
       "username": "demo_user",
-      "hashed_password": "0502572b3506de83530f04402220a51671bd0f41854b4abb6edaeda52f8bfc96",
-      "salt": "9bf5e575fc7e27bb",
-      "registration_date": "2025-12-05T23:17:51.927006"
+      "hashed_password": "082ee1eec9e00d85c2ac84cc56127a34d57ea8704ba215a05f2dc70b2bd02deb",
+      "salt": "f7aca778c84c5114",
+      "registration_date": "2025-12-05T23:36:04.084992"
+    },
+    {
+      "user_id": 2,
+      "username": "finaltest",
+      "hashed_password": "85e4b5e6f8c7b3dda4b9383baba588fadaf55dc02185dba0e2215945e962319d",
+      "salt": "92574b51c47ebf5c",
+      "registration_date": "2025-12-05T23:37:03.691230"
     }
   ]
 }
