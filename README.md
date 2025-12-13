@@ -114,9 +114,9 @@
 
 ## Демонстрация
 
-https://asciinema.org/a/2cLW9Pu0I5pO0Phz203Dj5pdd
+https://asciinema.org/a/r5kB4bwtAsefnilwxJa1g6LVf
 
-*или файл "demo2.cast"
+*или файл "demo3.cast"
 
 ## Автор
 
